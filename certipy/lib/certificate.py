@@ -936,7 +936,7 @@ def create_csr(
     extensions = []
 
     # Add Subject Alternative Name extension if needed
-    if alt_dns or alt_upn or alt_sid:
+    if alt_dns or alt_upn:
         general_names = []
 
         # Add DNS name
@@ -962,17 +962,6 @@ def create_csr(
                             }
                         )
                     }
-                )
-            )
-
-        # Add SID URL
-        if alt_sid:
-            if isinstance(alt_sid, bytes):
-                alt_sid = alt_sid.decode()
-
-            general_names.append(
-                asn1x509.GeneralName(
-                    {"uniform_resource_identifier": f"{SAN_URL_PREFIX}{alt_sid}"}
                 )
             )
 

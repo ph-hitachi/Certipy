@@ -618,8 +618,23 @@ class Authenticate:
                 logging.error(
                     f"Object SID mismatch between certificate and user {username!r}"
                 )
+                # Attempt to fetch the actual account SID for debugging
+                try:
+                    from certipy.lib.ldap import LDAPConnection
+                    from certipy.lib.target import Target as TargetClass
+
+                    target = TargetClass.from_options(self.config, dc_as_target=True)
+                    connection = LDAPConnection(target)
+                    connection.connect()
+                    user_entry = connection.get_user(username, silent=True)
+                    if user_entry:
+                        actual_sid = user_entry.get("objectSid")
+                        logging.info(f"Actual SID for {username!r} in AD: {actual_sid!r}")
+                except Exception:
+                    pass
+
                 if object_sid is not None:
-                    logging.error(
+                    logging.info(
                         f"Verify that user {username!r} has object SID {object_sid!r}"
                     )
 
