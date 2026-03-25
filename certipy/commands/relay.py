@@ -126,17 +126,19 @@ class ADCSHTTPRelayServer(HTTPRelayClient):
         # Check if server wants auth
         res = self.session.get(self.path)
 
-        if res.status_code != 401:
-            logging.info(
-                "Status code returned: %d. Authentication does not seem required for URL"
-                % res.status_code
-            )
-
+        # Some servers return 200 for certsrv/certfnsh.asp without auth, but we need the challenge.
+        # If we didn't get a 401, we'll try to get one from the root certsrv/ path.
         authenticate_header = res.headers.get("WWW-Authenticate", None)
+        if res.status_code != 401 and authenticate_header is None:
+            logging.debug(
+                f"Status code returned: {res.status_code}. Authentication not requested for {self.path}. Trying /certsrv/"
+            )
+            res = self.session.get("/certsrv/")
+            authenticate_header = res.headers.get("WWW-Authenticate", None)
+
         if authenticate_header is None:
-            logging.error(
-                "No authentication requested by the server for url %s. Sending NTLM auth anyways"
-                % self.adcs_relay.target
+            logging.warning(
+                "No authentication requested by the server. Sending NTLM auth anyways"
             )
             self.authenticationMethod = "NTLM"
         else:
@@ -147,8 +149,7 @@ class ADCSHTTPRelayServer(HTTPRelayClient):
                 self.authenticationMethod = "Negotiate"
             else:
                 logging.error(
-                    "Neither NTLM nor Negotiate auth offered by URL, offered protocols: %s"
-                    % authenticate_header
+                    f"Neither NTLM nor Negotiate auth offered by URL, offered protocols: {authenticate_header}"
                 )
                 return None
 
@@ -158,10 +159,17 @@ class ADCSHTTPRelayServer(HTTPRelayClient):
         res = self.session.get(self.path, headers=headers)
 
         if res.status_code != 401:
-            logging.error("Got unauthorized response from AD CS")
-            return None
+            # If the server returned 200 OK after sending Negotiate, it might mean we are already authenticated
+            # or the server is misconfigured. However, for AD CS relay, we MUST get a 401 with the challenge.
+            # We'll check the headers again.
+            authenticate_header = res.headers.get("WWW-Authenticate", None)
+            if authenticate_header is None:
+                logging.error(
+                    f"Got {res.status_code} response without authentication challenge"
+                )
+                return None
 
-        # Check for NTLM challenge in the response
+        # Extract the server challenge from the authentication header
         authenticate_header = res.headers.get("WWW-Authenticate", None)
         if authenticate_header is None:
             logging.error("No authentication challenge returned from server")
