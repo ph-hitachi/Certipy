@@ -537,7 +537,7 @@ def bytes_to_sid(sid_bytes: bytes) -> Optional[str]:
         return None
 
 
-def csr_to_der(csr: x509.CertificationRequest) -> bytes:
+def csr_to_der(csr: x509.CertificateSigningRequest) -> bytes:
     """Convert CSR to DER format."""
     return csr.public_bytes(Encoding.DER)
 
