@@ -48,6 +48,7 @@ from cryptography.hazmat.primitives.serialization import (
 from cryptography.x509 import SubjectAlternativeName, SubjectKeyIdentifier
 from cryptography.x509.oid import ExtensionOID, NameOID
 from impacket.dcerpc.v5.nrpc import checkNullString
+from impacket.ldaptypes import LDAP_SID
 from pyasn1.codec.der import decoder
 from pyasn1.type.char import UTF8String
 
@@ -109,14 +110,8 @@ class SecurityExtensionEntry(asn1core.Sequence):
     ]
 
 
-class SecurityExtensionEntries(asn1core.SequenceOf):
+class SecurityExtension(asn1core.SequenceOf):
     _child_spec = SecurityExtensionEntry
-
-
-class SecurityExtension(asn1core.Sequence):
-    _fields = [
-        ("entries", SecurityExtensionEntries, {"explicit": 0}),
-    ]
 
 
 # Microsoft-specific SAN URL prefix for SID
@@ -381,12 +376,38 @@ def get_object_sid_from_certificate_sid_extension(
         # Handle both our custom SecurityExtension and UnrecognizedExtension
         if isinstance(object_sid.value, SecurityExtension):
             # If it's our registered type, extract from the entries
-            for entry in object_sid.value["entries"]:
+            for entry in object_sid.value:
                 if entry["type"] == OID_NTDS_OBJECTSID:
-                    return entry["value"].decode()
+                    # Try to parse as binary SID first
+                    try:
+                        sid_data = entry["value"].native
+                        sid = LDAP_SID(data=sid_data)
+                        return sid.formatCanonical()
+                    except Exception:
+                        # Fallback to string search if binary parsing fails
+                        sid_value = entry["value"].native
+                        sid_start = sid_value.find(b"S-1-5")
+                        if sid_start != -1:
+                            return sid_value[sid_start:].decode().strip()
         elif isinstance(object_sid.value, x509.UnrecognizedExtension):
             # Fallback to binary search if unregistered
             sid_value = object_sid.value.value
+
+            # Try to parse as binary SID first
+            try:
+                # Binary SIDs are at least 8 bytes
+                for i in range(len(sid_value) - 8):
+                    try:
+                        sid = LDAP_SID(data=sid_value[i:])
+                        canonical = sid.formatCanonical()
+                        if canonical.startswith("S-1-5"):
+                            return canonical
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            # Fallback to string search
             sid_start = sid_value.find(b"S-1-5")
             if sid_start != -1:
                 return sid_value[sid_start:].decode().strip()
@@ -912,19 +933,26 @@ def create_csr(
     # Add Security Identifier extension if requested
     if alt_sid:
         # Create security extension
-        security_extension = SecurityExtension(
-            {
-                "entries": [
-                    {
-                        "type": OID_NTDS_OBJECTSID,
-                        "value": asn1core.OctetString(alt_sid.encode()),
-                    }
-                ]
-            }
+        try:
+            # Parse SID string to binary
+            sid = LDAP_SID()
+            sid.fromString(alt_sid)
+            binary_sid = sid.getData()
+        except Exception as e:
+            logging.error(f"Failed to parse SID {alt_sid!r}: {e}")
+            binary_sid = alt_sid.encode()
+
+        security_extension_value = SecurityExtension(
+            [
+                {
+                    "type": OID_NTDS_OBJECTSID,
+                    "value": asn1core.OctetString(binary_sid),
+                }
+            ]
         )
 
         sid_extension = asn1x509.Extension(
-            {"extn_id": "security_ext", "extn_value": security_extension}
+            {"extn_id": "security_ext", "extn_value": security_extension_value}
         )
         extensions.append(sid_extension)
 
