@@ -843,6 +843,7 @@ def create_csr(
 
     # Build CSR attributes
     cri_attributes = []
+    extensions = []
 
     # Add Subject Alternative Name extension if needed
     if alt_dns or alt_upn or alt_sid:
@@ -889,13 +890,7 @@ def create_csr(
         san_extension = asn1x509.Extension(
             {"extn_id": "subject_alt_name", "extn_value": general_names}
         )
-
-        # Add extension to CSR attributes
-        set_of_extensions = asn1csr.SetOfExtensions([[san_extension]])
-        cri_attribute = asn1csr.CRIAttribute(
-            {"type": "extension_request", "values": set_of_extensions}
-        )
-        cri_attributes.append(cri_attribute)
+        extensions.append(san_extension)
 
     # Add SMIME capability extension if requested
     if smime:
@@ -908,13 +903,7 @@ def create_csr(
                 ),
             }
         )
-
-        # Add extension to CSR attributes
-        set_of_extensions = asn1csr.SetOfExtensions([[smime_extension]])
-        cri_attribute = asn1csr.CRIAttribute(
-            {"type": "extension_request", "values": set_of_extensions}
-        )
-        cri_attributes.append(cri_attribute)
+        extensions.append(smime_extension)
 
     # Add Security Identifier extension if requested
     if alt_sid:
@@ -930,30 +919,10 @@ def create_csr(
             }
         )
 
-        san_extension = asn1x509.Extension(
+        sid_extension = asn1x509.Extension(
             {"extn_id": "security_ext", "extn_value": security_extension}
         )
-
-        # Add extension to CSR attributes
-        set_of_extensions = asn1csr.SetOfExtensions([[san_extension]])
-        cri_attribute = asn1csr.CRIAttribute(
-            {"type": "extension_request", "values": set_of_extensions}
-        )
-        cri_attributes.append(cri_attribute)
-
-    # Add renewal certificate if provided
-    if renewal_cert:
-        cri_attributes.append(
-            asn1csr.CRIAttribute(
-                {
-                    "type": "1.3.6.1.4.1.311.13.1",
-                    "values": asn1x509.SetOf(
-                        [asn1x509.Certificate.load(cert_to_der(renewal_cert))],
-                        spec=asn1x509.Certificate,
-                    ),
-                }
-            )
-        )
+        extensions.append(sid_extension)
 
     # Add Microsoft Application Policies if requested
     if application_policies:
@@ -977,13 +946,29 @@ def create_csr(
                 "extn_value": asn1x509.ParsableOctetString(der_encoded_cert_policies),
             }
         )
+        extensions.append(app_policy_extension)
 
-        # Add extension to CSR attributes
-        set_of_extensions = asn1csr.SetOfExtensions([[app_policy_extension]])
+    # If we have any extensions, add them as a single extension_request attribute
+    if extensions:
+        set_of_extensions = asn1csr.SetOfExtensions([extensions])
         cri_attribute = asn1csr.CRIAttribute(
             {"type": "extension_request", "values": set_of_extensions}
         )
         cri_attributes.append(cri_attribute)
+
+    # Add renewal certificate if provided
+    if renewal_cert:
+        cri_attributes.append(
+            asn1csr.CRIAttribute(
+                {
+                    "type": "1.3.6.1.4.1.311.13.1",
+                    "values": asn1x509.SetOf(
+                        [asn1x509.Certificate.load(cert_to_der(renewal_cert))],
+                        spec=asn1x509.Certificate,
+                    ),
+                }
+            )
+        )
 
     # Set all CSR attributes
     certification_request_info["attributes"] = cri_attributes

