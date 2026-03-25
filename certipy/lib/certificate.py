@@ -48,7 +48,6 @@ from cryptography.hazmat.primitives.serialization import (
 from cryptography.x509 import SubjectAlternativeName, SubjectKeyIdentifier
 from cryptography.x509.oid import ExtensionOID, NameOID
 from impacket.dcerpc.v5.nrpc import checkNullString
-from impacket.ldaptypes import LDAP_SID
 from pyasn1.codec.der import decoder
 from pyasn1.type.char import UTF8String
 
@@ -378,34 +377,26 @@ def get_object_sid_from_certificate_sid_extension(
             # If it's our registered type, extract from the entries
             for entry in object_sid.value:
                 if entry["type"] == OID_NTDS_OBJECTSID:
-                    # Try to parse as binary SID first
-                    try:
-                        sid_data = entry["value"].native
-                        sid = LDAP_SID(data=sid_data)
-                        return sid.formatCanonical()
-                    except Exception:
-                        # Fallback to string search if binary parsing fails
-                        sid_value = entry["value"].native
-                        sid_start = sid_value.find(b"S-1-5")
-                        if sid_start != -1:
-                            return sid_value[sid_start:].decode().strip()
+                    # Try to parse as binary SID
+                    sid = bytes_to_sid(entry["value"].native)
+                    if sid:
+                        return sid
+
+                    # Fallback to string search
+                    sid_value = entry["value"].native
+                    sid_start = sid_value.find(b"S-1-5")
+                    if sid_start != -1:
+                        return sid_value[sid_start:].decode().strip()
+
         elif isinstance(object_sid.value, x509.UnrecognizedExtension):
             # Fallback to binary search if unregistered
             sid_value = object_sid.value.value
 
             # Try to parse as binary SID first
-            try:
-                # Binary SIDs are at least 8 bytes
-                for i in range(len(sid_value) - 8):
-                    try:
-                        sid = LDAP_SID(data=sid_value[i:])
-                        canonical = sid.formatCanonical()
-                        if canonical.startswith("S-1-5"):
-                            return canonical
-                    except Exception:
-                        continue
-            except Exception:
-                pass
+            for i in range(len(sid_value) - 8):
+                sid = bytes_to_sid(sid_value[i:])
+                if sid and sid.startswith("S-1-5"):
+                    return sid
 
             # Fallback to string search
             sid_start = sid_value.find(b"S-1-5")
@@ -472,7 +463,81 @@ def get_object_sid_from_certificate(
 # =========================================================================
 
 
-def csr_to_der(csr: x509.CertificateSigningRequest) -> bytes:
+def sid_to_bytes(sid_str: str) -> bytes:
+    """
+    Convert a Security Identifier (SID) string (e.g., S-1-5-21-...) to its binary representation.
+
+    Format:
+    - Revision (1 byte)
+    - Sub-authority count (1 byte)
+    - Identifier authority (6 bytes, big-endian)
+    - Sub-authorities (N * 4 bytes, little-endian)
+
+    Args:
+        sid_str: The SID as a string
+
+    Returns:
+        Binary representation of the SID
+    """
+    try:
+        parts = sid_str.split("-")
+        if parts[0] != "S" or len(parts) < 3:
+            raise ValueError(f"Invalid SID format: {sid_str}")
+
+        revision = int(parts[1])
+        sub_authority_count = len(parts) - 3
+        identifier_authority = int(parts[2])
+
+        # Pack the header
+        # B = unsigned char (1 byte)
+        # >Q = unsigned long long (8 bytes, big-endian) - we take only last 6
+        header = struct.pack("BB", revision, sub_authority_count)
+        header += struct.pack(">Q", identifier_authority)[2:]
+
+        # Pack the sub-authorities
+        # <I = unsigned int (4 bytes, little-endian)
+        sub_authorities = b""
+        for i in range(3, len(parts)):
+            sub_authorities += struct.pack("<I", int(parts[i]))
+
+        return header + sub_authorities
+    except Exception as e:
+        logging.error(f"Failed to convert SID {sid_str!r} to bytes: {e}")
+        return sid_str.encode()
+
+
+def bytes_to_sid(sid_bytes: bytes) -> Optional[str]:
+    """
+    Convert a binary Security Identifier (SID) to its string representation.
+
+    Args:
+        sid_bytes: Binary data of the SID
+
+    Returns:
+        The SID as a string (e.g., S-1-5-21-...), or None if invalid
+    """
+    try:
+        if len(sid_bytes) < 8:
+            return None
+
+        revision, sub_authority_count = struct.unpack("BB", sid_bytes[:2])
+        identifier_authority = struct.unpack(">Q", b"\x00\x00" + sid_bytes[2:8])[0]
+
+        sid_str = f"S-{revision}-{identifier_authority}"
+
+        for i in range(sub_authority_count):
+            start = 8 + (i * 4)
+            if start + 4 > len(sid_bytes):
+                break
+            sub_authority = struct.unpack("<I", sid_bytes[start : start + 4])[0]
+            sid_str += f"-{sub_authority}"
+
+        return sid_str
+    except Exception:
+        return None
+
+
+def csr_to_der(csr: x509.CertificationRequest) -> bytes:
     """Convert CSR to DER format."""
     return csr.public_bytes(Encoding.DER)
 
@@ -933,14 +998,7 @@ def create_csr(
     # Add Security Identifier extension if requested
     if alt_sid:
         # Create security extension
-        try:
-            # Parse SID string to binary
-            sid = LDAP_SID()
-            sid.fromString(alt_sid)
-            binary_sid = sid.getData()
-        except Exception as e:
-            logging.error(f"Failed to parse SID {alt_sid!r}: {e}")
-            binary_sid = alt_sid.encode()
+        binary_sid = sid_to_bytes(alt_sid)
 
         security_extension_value = SecurityExtension(
             [
