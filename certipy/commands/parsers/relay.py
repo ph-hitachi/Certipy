@@ -9,6 +9,8 @@ HTTP endpoints for certificate theft and escalation.
 import argparse
 from typing import Callable, Tuple
 
+from . import target
+
 # Command name identifier
 NAME = "relay"
 
@@ -55,7 +57,8 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> Tuple[str, Callable
 
     # Target CA (required)
     subparser.add_argument(
-        "-target",
+        "-ca-target",
+        dest="target",
         action="store",
         metavar="protocol://<ip address or hostname>",
         required=True,
@@ -64,6 +67,9 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> Tuple[str, Callable
             "Example: http://ca.corp.local for ESC8 or rpc://ca.corp.local for ESC11"
         ),
     )
+
+    # Add common connection and authentication options
+    target.add_argument_group(subparser)
 
     # Certificate request parameters
     cert_group = subparser.add_argument_group("certificate request options")
@@ -198,20 +204,14 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> Tuple[str, Callable
         help="Don't skip previously attacked users (use with -forever)",
     )
     relay_group.add_argument(
+        "-auto-sid",
+        action="store_true",
+        help="Automatically fetch the Object SID of the relayed user from LDAP if credentials are provided",
+    )
+    relay_group.add_argument(
         "-enum-templates",
         action="store_true",
         help="Relay to /certsrv/certrqxt.asp and parse available certificate templates",
-    )
-
-    # Connection parameters
-    conn_group = subparser.add_argument_group("connection options")
-    conn_group.add_argument(
-        "-timeout",
-        action="store",
-        metavar="seconds",
-        help="Timeout for connections in seconds (default: 10)",
-        default=10,
-        type=int,
     )
 
     return NAME, entry

