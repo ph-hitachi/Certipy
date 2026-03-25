@@ -101,7 +101,7 @@ OID_PRINCIPAL_NAME = asn1cms.ObjectIdentifier("1.3.6.1.4.1.311.20.2.3")
 OID_CMC_ADD_ATTRIBUTES = asn1cms.ObjectIdentifier("1.3.6.1.4.1.311.10.10.1")
 OID_NTDS_OBJECTSID = asn1cms.ObjectIdentifier("1.3.6.1.4.1.311.25.2.1")
 
-
+ 
 class SecurityExtensionEntry(asn1core.Sequence):
     _fields = [
         ("type", asn1core.ObjectIdentifier),
@@ -378,20 +378,24 @@ def get_object_sid_from_certificate_sid_extension(
         # Get Microsoft security extension
         object_sid = certificate.extensions.get_extension_for_oid(NTDS_CA_SECURITY_EXT)
 
-        if not isinstance(object_sid.value, x509.UnrecognizedExtension):
-            raise ValueError(
-                f"Expected UnrecognizedExtension for security extension, got {type(object_sid.value)}"
-            )
-
-        # Extract SID string (format is binary with an S-1-5... SID string)
-        sid_value = object_sid.value.value
-        sid_start = sid_value.find(b"S-1-5")
-
-        if sid_start == -1:
-            logging.debug("Could not find SID pattern in security extension")
-            return None
-
-        return sid_value[sid_start:].decode().strip()
+        # Handle both our custom SecurityExtension and UnrecognizedExtension
+        if isinstance(object_sid.value, SecurityExtension):
+            # If it's our registered type, extract from the entries
+            for entry in object_sid.value["entries"]:
+                if entry["type"] == OID_NTDS_OBJECTSID:
+                    return entry["value"].decode()
+        elif isinstance(object_sid.value, x509.UnrecognizedExtension):
+            # Fallback to binary search if unregistered
+            sid_value = object_sid.value.value
+            sid_start = sid_value.find(b"S-1-5")
+            if sid_start != -1:
+                return sid_value[sid_start:].decode().strip()
+        else:
+            # Try to dump and find the SID string as a last resort
+            sid_value = object_sid.value.public_bytes()
+            sid_start = sid_value.find(b"S-1-5")
+            if sid_start != -1:
+                return sid_value[sid_start:].decode().strip()
 
     except Exception:
         pass
